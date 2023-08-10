@@ -1,21 +1,6 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import { nip98 } from 'npm:nostr-tools@1.14.1';
 
-import { nip98 } from 'nostr-tools';
-
-interface WorkerENV extends Env {
-	BANBOORU_BUCKET: {
-		put: Function,
-		get: Function
-	}
-}
+import type { WorkerENV } from './worker_env.d.ts';
 
 const hexKeyPattern = /^[0-9A-Fa-f]{64}$/;
 
@@ -56,7 +41,7 @@ const isAuthorized = async (env: WorkerENV, request: Request, method: string): P
 };
 
 export default {
-	async fetch(request: Request, env: WorkerENV, ctx: ExecutionContext): Promise<Response> {
+	async fetch(request: Request, env: WorkerENV, _ctx: any): Promise<Response> {
 		const url = new URL(request.url);
 
 		// GET /file/<SHA-256>
