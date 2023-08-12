@@ -1,4 +1,4 @@
-import { Event, EventKind, nip26, nip98, hexToBytes, getBlankEvent, finishEvent, router, HandlerContext, MatchHandler } from './deps.ts'
+import { R2Object, Event, EventKind, nip26, nip98, bytesToHex, getBlankEvent, finishEvent, router, HandlerContext, MatchHandler, ModuleWorkerContext } from './deps.ts'
 import type { WorkerEnv } from "./worker_env.d.ts";
 
 const hexKeyPattern = /^[0-9A-Fa-f]{64}$/;
@@ -15,7 +15,7 @@ type AuthEvent = Event & { kind: EventKind.HttpAuth }
 async function get_auth_event(request: Request): Promise<AuthEvent | { error: string }> {
   try {
     const token = request.headers.get('Authorization')
-    const event: AuthEnv = (await nip98.unpackEventFromToken(token)) as AuthEvent
+    const event: AuthEvent = (await nip98.unpackEventFromToken(token)) as AuthEvent
     if (await nip98.validateEvent(event, request.url, request.method)) {
       return event
     } else {
@@ -32,69 +32,114 @@ async function get_auth_event(request: Request): Promise<AuthEvent | { error: st
   }
 }
 
-/** A  WorkerEnv once the request as been authenticated (using NIP-98) */
-type AuthEnv = WorkerEnv & {
+/**
+ * Context for route handlers.
+ */
+type Context = {
+  /** The bindings assigned to the Worker. */
+  env: WorkerEnv
+  /** The module worked context provider useful method. */
+  workerContext: ModuleWorkerContext
+}
+
+/**
+ * Context for authenticated route handlers. 
+ */
+type AuthContext = Context & {
   /** Verified `kind 27235` event from the request Authorization header. */
   authEvent: AuthEvent
-  /** The user id, same as `authEvent.pubkey` */
-  userId: string
-  /** The user's role (as retrieved with `BANBOORU_PUBKEY_ROLE_KV.get(userId)`. */
-  userRole: Promise<Role | undefined>
+  
+  /** Detaisl about the authenticated user. */
+  user: {
+    /** The user id, same as `authEvent.pubkey` */
+    id: string
+    /** The user's role (as retrieved with `BANBOORU_PUBKEY_ROLE_KV.get(userId)` */
+    role: Role | undefined
+  }
 }
 
 /**
  * Authentication middleware. Requires a NIP-94 Authorization header. 
  */
-function auth(next: MatchHandler<AuthEnv>): MatchHandler<WorkerEnv> {
-  return async (request: Request, env: HandlerContext<WorkerEnv>, params: Record<string, string>) => {
+function auth(next: MatchHandler<AuthContext>): MatchHandler<Context> {
+  return async (request: Request, ctx: HandlerContext<Context>, params: Record<string, string>) => {
     const authEvent: AuthEvent | { error: string } = await get_auth_event(request);
     if (Object.hasOwn(authEvent, "error")) {
-      // TODO: Return JSON body with error message.
       return new Response(`Unauthorized: ${authEvent.error}`, { status: 401 });
     } else {
-      const userId = authEvent.pubkey
-      const userRole = env.BANBOORU_PUBKEY_ROLE_KV.get(authEvent.pubkey) as Promise<Role | undefined>
-      return next(request, { ...env, authEvent, userId, userRole }, params)
+      return next(request, Object.assign(ctx, {
+        authEvent,
+        user: {
+          id: authEvent.pubkey,
+          role: await ctx.env.BANBOORU_PUBKEY_ROLE_KV.get(authEvent.pubkey) as Role | undefined
+        }
+      }), params)
     }
   }
 }
 
 /**
- * Restricted access middleware. Requires a NIP-94 Authorization header from a known pubblic key with one of the specific `roles`.
+ * Handle extracting metadata from object and sending the `kind 1063` event.
+ * 
+ * @param request The request used to create the object.
+ * @param object The object itself.
+ * @param env The worker environment.
  */
-function restricted(roles: Role[], next: MatchHandler<AuthEnv>): MatchHandler<WorkerEnv> {
-  return auth(async (request: Request, env: HandlerContext<AuthEnv>, params: Record<string, string>) => {
-    const role = await env.userRole
-    if(role && roles.includes(role)) {
-      return next(request, env, params)
+async function handleMetadada(baseUrl: string, object: R2Object, env: WorkerEnv, delegation: nip26.Delegation): Promise<void> {
+  if(!object.checksums.sha256) {
+    throw new Error("Failed to build file metadata: missing sha256 checksum.")
+  }
+  const metadataEvent: Event = getBlankEvent(1063)
+  metadataEvent.tags.push(['url', `${baseUrl}/${object.key}`])
+  metadataEvent.tags.pusg(['m', object.httpMetadata.contentType || 'application/octet-stream'])
+  metadataEvent.tags.push(['x',  bytesToHex(new Uint8Array(object.checksums.sha256))])
+  metadataEvent.tags.push(['size', object.size])
+  // TODO dim (image dimensions) requires reading image header bytes
+  // TODO i (torrent infohash) and magnet (Magnet URI)- requires generating a .torrent file (which could be stored in the bucket too)
+  // TODO blurhash - requires rendering the image
+  metadataEvent.tags.push(['delegation', delegation.from, delegation.cond, delegation.sig])
+  const signedMetadata = finishEvent(metadataEvent, delegation.to)
+  await env.BANBOORU_BUCKET.put(`${object.key}.metadata.json`, JSON.stringify(signedMetadata))
+
+  // TODO Send `kind 1063` event to nostr relay(s)
+
+  return
+}
+
+/**
+ * Restricted access middleware. Requires a NIP-94 Authorization header from a known public key with one of the specific `roles`.
+ */
+function restricted(roles: Role[], next: MatchHandler<AuthContext>): MatchHandler<Context> {
+  return auth((request: Request, ctx: HandlerContext<AuthContext>, params: Record<string, string>) => {
+    if(ctx.user.role && roles.includes(ctx.user.role)) {
+      return next(request, ctx, params)
     } else {
-      // TODO: Return JSON body with error message.
       return new Response("Forbidden.", { status: 403 });
     }
   })
 }
 
 export default {
-  fetch: router<WorkerEnv>({
-    'GET /file/:hash': async function getFile(_req, env, params) {
+  fetch: router<Context>({
+    'GET /file/:hash': async function getFile(_req, { env }, params) {
       if(!params.hash.match(hexKeyPattern)) return new Response(`Invalid SHA256 hash: ${params.hash}`, { status: 400 });
+
       const object = await env.BANBOORU_BUCKET.get(params.hash);
-      if (object === null) {
-        return new Response("Object Not Found", { status: 404 });
-      }
+      if (object === null) return new Response("Object Not Found", { status: 404 });
+      
       const headers = new Headers();
       object.writeHttpMetadata(headers);
       headers.set("etag", object.httpEtag);
       return new Response(object.body, { headers });
     },
-    'PUT /file/:hash': restricted(["admin", "user"], async function putFile(request, env, params) {
+    'PUT /file/:hash': restricted(["admin", "user"], async function putFile(request, { env, authEvent, workerContext }, params) {
       if(!params.hash.match(hexKeyPattern)) return new Response(`Invalid SHA256 hash: ${params.hash}`, { status: 400 });
       if(!request.body) return new Response("Missing body", { status: 400 });
   
       // We expect the SHA256 hash from the URL to match the one of the request body (ie. the uploaded file).
-      // Per NIP-98 the authentication SHOULD include a SHA256 hash of the request body in a payload tag as hex (["payload", "<sha256-hex>"]).
+      // Per NIP-98 the authentication event SHOULD include a SHA256 hash of the request body in a 'payload' tag as hex (["payload", "<sha256-hex>"]).
       // We will validate that the actual payload hash match when uploading to R2.
-      const payloadTag = env.authEvent.tags.find((t: string[]) => t[0] === 'payload')
+      const payloadTag = authEvent.tags.find((t: string[]) => t[0] === 'payload')
       if(payloadTag && payloadTag[1] && payloadTag[1] != params.hash) {
         return new Response(`Unauthorized: Invalid nostr event, payload signature invalid`, { status: 401 });
       }
@@ -106,7 +151,11 @@ export default {
         const object = await env.BANBOORU_BUCKET.put(params.hash, request.body, {
           // See https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#r2putoptions
           // R2 will check the received data SHA-256 hash to confirm received object integrity and will fail if it does not.
-          sha256: hexToBytes(params.hash).buffer
+          sha256: params.hash,
+          httpMetadata: {
+            contentType: request.headers.get('content-type') || undefined,
+            cacheControl: 'public, max-age=31536000, immutable' // let's client cache this for a year
+          }
         });
         if (!object) {
           if(payloadTag && payloadTag[1]) {
@@ -115,55 +164,51 @@ export default {
             return new Response("Bad Request", { status: 400 })
           }
         }
-  
-        const metadataEvent: Event = getBlankEvent(1063)
-        request.url
-        metadataEvent.tags.push(['url', `${request.headers.get('x-forwarded-proto')}://${request.headers.get('host')}/file/${params.hash}`])
-        metadataEvent.tags.pusg(['m', request.headers.get('content-type') || 'application/octet-stream'])
-        metadataEvent.tags.push(['x', params.hash])
-        metadataEvent.tags.push(['size', object.size])
-        // TODO: image dimension - requires reading image header bytes
-        // TODO: i and magnet URI - requires generatign a .torrent file
-        // TODO: blurhash - requires rendering the image
-  
-        // TODO: NIP-26 delegation tag
-        const signedMetadata = finishEvent(metadataEvent, env.PRIVATE_KEY)
-        await env.BANBOORU_BUCKET.put(`${params.hash}.metadata.json`, JSON.stringify(signedMetadata))
-  
-        // TODO: Send signedMetadata to Nost relay(s)
+
+        // Handle metadata without blocking the response.
+        workerContext.waitUntil(handleMetadada(
+          `${request.headers.get('x-forwarded-proto')}://${request.headers.get('host')}`,
+            object,
+            env,
+            // TODO Safer parsing of the NIP Delegation
+            request.headers.has("x-nip-26-delegation") ? JSON.parse(request.headers.get("x-nip-26-delegation") as string) as nip26.Delegation : null
+          ))
   
         return new Response(null, { status: 204 }) // Success response with no content.
       } catch (error) {
         console.log("Object PUT failed", error)
-        return new Response(`Server error`, { status: 500 });
+        return new Response('Server error', { status: 500 });
       }
     }),
-    'DELETE /file/:hash': restricted(["admin", "user"], async function deleteFile(_req, env, params) {
+    'DELETE /file/:hash': restricted(["admin", "user"], async function deleteFile(_, { env, user }, params) {
       if(!params.hash.match(hexKeyPattern)) return new Response(`Invalid SHA256 hash: ${params.hash}`, { status: 400 });
-      const role = await env.userRole
-      
-      // Retrieve the stored `kind 1063` event for the file.
-      const metadataObject = await env.BANBOORU_BUCKET.get(`${params.hahs}.metadata.json`)
-      if (!metadataObject) {
-        return new Response("Not Found", { status: 404 })
-      }
-      const metadata = await metadataObject.json() as Event
-  
-      // Either the user is admin, or the user signed the `kind 1063` event (possibly delegating the signature).
-      if (role == 'admin' || env.userId == (nip26.getDelegator(metadata) || metadata.pubkey)) {
-        try {
-          await env.BANBOORU_BUCKET.delete(params.hash);
-          await env.BANBOORU_BUCKET.delete(`${params.hahs}.metadata.json`);
-  
-          // TODO: Delete nostr event
-  
-          return new Response(null, { status: 204 })
-        } catch (error) {
-          console.error(error);
-          return new Response("Error deleting object in bucket", { status: 500 }); // 500 Internal Server Error
+
+      try {
+        // Check that the file exists.
+        const object = await env.BANBOORU_BUCKET.get(params.hahs)
+        if(!object) return new Response("Not Found", { status: 404 })
+
+        // Retrieve the stored `kind 1063` event with the file metadata.
+        const metadataObject = await env.BANBOORU_BUCKET.get(`${params.hahs}.metadata.json`)
+        const metadata: Event | null = metadataObject ? (await metadataObject.json()) as Event : null
+    
+        // Either the user is admin, or the user signed the `kind 1063` event (possibly delegating the signature).
+        if (user.role == 'admin' || (metadata && user.id == (nip26.getDelegator(metadata) || metadata.pubkey))) {
+            await Promise.all([
+              env.BANBOORU_BUCKET.delete(params.hash),
+              env.BANBOORU_BUCKET.delete(`${params.hahs}.metadata.json`)
+            ])
+    
+            // TODO Send delete nostr event to rely(s)
+
+            return new Response(null, { status: 204 }) // Success response with no content.
+          
+        } else {
+          return new Response("Forbidden.", { status: 403 });
         }
-      } else {
-        return new Response("Forbidden.", { status: 403 });
+      } catch (error) {
+        console.error("Object DEL failed", error);
+        return new Response('Server error', { status: 500 });
       } 
     })
   })
