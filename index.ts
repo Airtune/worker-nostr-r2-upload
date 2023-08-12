@@ -5,7 +5,10 @@ const hexKeyPattern = /^[0-9A-Fa-f]{64}$/;
 
 type Role = "admin" | "user" | "banned";
 
+/** NIP-98 authentication event */
 type AuthEvent = Event & { kind: EventKind.HttpAuth }
+/** NIP-94 file-metadata event */
+type MetadataEvent = Event & { kind: 1063 }
 
 /**
  * Verify a request NIP-98 authorization.
@@ -89,9 +92,9 @@ async function handleMetadada(baseUrl: string, object: R2Object, env: WorkerEnv,
   if(!object.checksums.sha256) {
     throw new Error("Failed to build file metadata: missing sha256 checksum.")
   }
-  const metadataEvent: Event = getBlankEvent(1063)
+  const metadataEvent: Event = getBlankEvent(1063) // 1063 is NIP-94 event kind for file metadata
   metadataEvent.tags.push(['url', `${baseUrl}/${object.key}`])
-  metadataEvent.tags.pusg(['m', object.httpMetadata.contentType || 'application/octet-stream'])
+  metadataEvent.tags.push(['m', object.httpMetadata.contentType || 'application/octet-stream'])
   metadataEvent.tags.push(['x',  bytesToHex(new Uint8Array(object.checksums.sha256))])
   metadataEvent.tags.push(['size', object.size])
   // TODO dim (image dimensions) requires reading image header bytes
@@ -119,6 +122,25 @@ function restricted(roles: Role[], next: MatchHandler<AuthContext>): MatchHandle
   })
 }
 
+/**
+ * Returns whether a specific user is the publisher of a nostr event.
+ */
+function isPublisher(userId: string, event: Event): boolean {
+  return event.pubkey === userId;
+}
+
+/**
+ * Returns whether a specific user delegated signature of a nostr event.
+ */
+function isDelegator(userId: string, event: MetadataEvent): boolean {
+  try {
+    return nip26.getDelegator(event) === userId;
+  } catch (error) {
+    console.log('Failed to get NIP-26 delegator from event', event, error)
+    return false
+  }
+}
+
 export default {
   fetch: router<Context>({
     'GET /file/:hash': async function getFile(_req, { env }, params) {
@@ -141,7 +163,7 @@ export default {
       // We will validate that the actual payload hash match when uploading to R2.
       const payloadTag = authEvent.tags.find((t: string[]) => t[0] === 'payload')
       if(payloadTag && payloadTag[1] && payloadTag[1] != params.hash) {
-        return new Response(`Unauthorized: Invalid nostr event, payload signature invalid`, { status: 401 });
+        return new Response(`Unauthorized: Invalid nostr event, payload signature does not match URL`, { status: 401 });
       }
   
       try {
@@ -158,7 +180,7 @@ export default {
           }
         });
         if (!object) {
-          if(payloadTag && payloadTag[1]) {
+          if(payloadTag && payloadTag[1]) { // The user signed the hash as part of the auth event. 
             return new Response(`Unauthorized: Invalid nostr event, payload signature invalid`, { status: 401 });
           } else {
             return new Response("Bad Request", { status: 400 })
@@ -167,7 +189,7 @@ export default {
 
         // Handle metadata without blocking the response.
         workerContext.waitUntil(handleMetadada(
-          `${request.headers.get('x-forwarded-proto')}://${request.headers.get('host')}`,
+          `https://${request.headers.get('host')}`,
             object,
             env,
             // TODO Safer parsing of the NIP Delegation
@@ -190,10 +212,10 @@ export default {
 
         // Retrieve the stored `kind 1063` event with the file metadata.
         const metadataObject = await env.BANBOORU_BUCKET.get(`${params.hahs}.metadata.json`)
-        const metadata: Event | null = metadataObject ? (await metadataObject.json()) as Event : null
+        const metadata: Event | null = metadataObject ? (await metadataObject.json()) as MetadataEvent : null
     
         // Either the user is admin, or the user signed the `kind 1063` event (possibly delegating the signature).
-        if (user.role == 'admin' || (metadata && user.id == (nip26.getDelegator(metadata) || metadata.pubkey))) {
+        if (user.role == 'admin' || (metadata && (isPublisher(user.id, metadata) || isDelegator(user.id, metadata)))) {
             await Promise.all([
               env.BANBOORU_BUCKET.delete(params.hash),
               env.BANBOORU_BUCKET.delete(`${params.hahs}.metadata.json`)
