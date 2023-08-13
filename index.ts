@@ -147,11 +147,22 @@ function isDelegator(userId: string, event: MetadataEvent): boolean {
 }
 
 const handler = router<Context>({
+  'HEAD@/file/:hash': async function getFile(_req, { env }, params) {
+    if(!params.hash.match(hexKeyPattern)) return new Response(`Not Found: invalid SHA256 hash '${params.hash}'`, { status: 404 });
+
+    const object = await env.BANBOORU_BUCKET.head(params.hash);
+    if (object === null) return new Response("Not Found", { status: 404 });
+    
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set("etag", object.httpEtag);
+    return new Response(null, { headers });
+  },
   'GET@/file/:hash': async function getFile(_req, { env }, params) {
-    if(!params.hash.match(hexKeyPattern)) return new Response(`Invalid SHA256 hash: ${params.hash}`, { status: 400 });
+    if(!params.hash.match(hexKeyPattern)) return new Response(`Not Found: invalid SHA256 hash '${params.hash}'`, { status: 404 });
 
     const object = await env.BANBOORU_BUCKET.get(params.hash);
-    if (object === null) return new Response("Object Not Found", { status: 404 });
+    if (object === null) return new Response("Not Found", { status: 404 });
     
     const headers = new Headers();
     object.writeHttpMetadata(headers);
