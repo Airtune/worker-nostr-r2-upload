@@ -169,7 +169,7 @@ const handler = router<Context>({
     headers.set("etag", object.httpEtag);
     return new Response(object.body, { headers });
   },
-  'PUT@/file/:hash': restricted(["admin", "user"], async function putFile(request, { env, authEvent, workerContext }, params) {
+  'PUT@/file/:hash': restricted(["admin", "user"], async function putFile(request, { env, authEvent, workerContext, user }, params) {
     if(!params.hash.match(hexKeyPattern)) return new Response(`Invalid SHA256 hash: ${params.hash}`, { status: 400 });
     if(!request.body) return new Response("Missing body", { status: 400 });
 
@@ -202,13 +202,29 @@ const handler = router<Context>({
         }
       }
 
+      let nip26Delegation: nip26.Delegation | undefined;
+      if (request.headers.has("x-nip-26-delegation")) {
+        const nip26DelegationHeader: string | null = request.headers.get("x-nip-26-delegation");
+        if (nip26DelegationHeader) {
+          const parsedHeader = JSON.parse(nip26DelegationHeader);
+          const isNip26Delegation = typeof(parsedHeader) === 'object' &&
+                                    typeof(parsedHeader.from) === 'string' &&
+                                    typeof(parsedHeader.cond) === 'string' &&
+                                    typeof(parsedHeader.sig) === 'string';
+          
+          if (isNip26Delegation) {
+            nip26Delegation = parsedHeader;
+          }
+        }
+      }
+
       // Handle metadata without blocking the response.
       workerContext.waitUntil(handleMetadada(
         `https://${request.headers.get('host')}`,
           object,
           env,
           // TODO Safer parsing of the NIP Delegation
-          request.headers.has("x-nip-26-delegation") ? JSON.parse(request.headers.get("x-nip-26-delegation") as string) as nip26.Delegation : undefined
+          nip26Delegation
         ))
 
       return new Response(null, { status: 204 }) // Success response with no content.
