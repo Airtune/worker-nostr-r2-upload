@@ -23,6 +23,8 @@ jobs:
           deno-version: ${{ matrix.deno-version }}
       - name: Build
         run: deno run --reload index.ts
-      - name: Test
-        run: deno test
+      - name: Build Test
+        run: deno test --reload --no-run
+      - name: Run Test
+        run: deno test --no-prompt
 
