@@ -154,6 +154,9 @@ const handler = router<Context>({
   'PUT@/file/:hash': restricted(["admin", "user"], async function putFile(request, { env, fileMetadataEvent, workerContext }, params) {
     if(!params.hash.match(hexKeyPattern)) return new Response(`Invalid SHA256 hash: ${params.hash}`, { status: 400 });
     if(!request.body) return new Response("Missing body", { status: 400 });
+    const urlFromMetadata = (fileMetadataEvent.tags.find(t => t[0] == 'url') || [])[1]
+    if(request.url != urlFromMetadata)
+      return new Response(`Unauthorized: signed URL does not match request ${request.url} != ${urlFromMetadata}`, { status: 401 });
 
     // We expect the SHA256 hash from the URL to match the one of the event in the Authorization header.
     const sha256Tag = fileMetadataEvent.tags.find((t: string[]) => t[0] === 'x');

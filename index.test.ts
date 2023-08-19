@@ -1,6 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.198.0/assert/mod.ts";
 import { describe, it } from "https://deno.land/std@0.198.0/testing/bdd.ts";
-import { stub, spy, assertSpyCallAsync } from "https://deno.land/std@0.198.0/testing/mock.ts";
+import { stub, spy, assertSpyCallAsync, assertSpyCalls } from "https://deno.land/std@0.198.0/testing/mock.ts";
 
 import index from './index.ts'
 import { WorkerEnv } from "./worker_env.d.ts";
@@ -145,7 +145,40 @@ describe("index.ts", () => {
                 JSON.stringify(metadata)
             ] as any })
         })
+        it("should reject a request if URL does not match the metadata", async () => {
+            // Arrange
+            const hash = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            const body = ReadableStream.from([new Uint8Array()])
+            const env = new MockWorkerEnv
+            const ctx = new MockModuleWorkerContext
+            const r2PutSpy = spy(env.BANBOORU_BUCKET, 'put')
+            stub(env.BANBOORU_PUBKEY_ROLE_KV, 'get', () => Promise.resolve('user') as any)
+            const privateKey = generatePrivateKey()
+            const metadata = fileMetadataEvent(privateKey,[
+                ['url', `https://example.com/file.txt`],
+                ['x', hash],
+                ['m', 'text/plain'],
+                ['size', '0']    
+            ])
+
+            // Act
+            const request = new Request(`https://example.com/file/${hash}`, {
+                method: "PUT",
+                headers: {
+                    'Authorization': btoa(JSON.stringify(metadata)),
+                    'Content-Type': 'text/plain'
+                },
+                body
+            })
+            const response = await index.fetch(request, env, ctx)
+            await ctx.waitForAll()
+
+            //Assert
+            assertEquals(response.status, 401)
+            assertSpyCalls(r2PutSpy, 0);
+        })
     })
+
 })
 
 function fileMetadataEvent(privateKey: string, tags: string[][]): Event<1063> {
