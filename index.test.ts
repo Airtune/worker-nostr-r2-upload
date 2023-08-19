@@ -105,6 +105,7 @@ describe("index.ts", () => {
             const hash = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
             const body = ReadableStream.from([new Uint8Array()])
             const env = new MockWorkerEnv
+            const ctx = new MockModuleWorkerContext
             const r2PutSpy = spy(env.BANBOORU_BUCKET, 'put')
             stub(env.BANBOORU_PUBKEY_ROLE_KV, 'get', () => Promise.resolve('user') as any)
             const privateKey = generatePrivateKey()
@@ -121,15 +122,28 @@ describe("index.ts", () => {
                 headers: {
                     'Authorization': btoa(JSON.stringify(metadata)),
                     'Content-Type': 'text/plain'
-                }
+                },
+                body
             })
-            const response = await index.fetch(request, env, new MockModuleWorkerContext)
-            console.log(response)
+            const response = await index.fetch(request, env, ctx)
+            await ctx.waitForAll()
 
             //Assert
             assertEquals(response.status, 204)
-            assertSpyCallAsync(r2PutSpy, 0, { args: [hash, body] as any })
-            assertSpyCallAsync(r2PutSpy, 0, { args: [`${hash}.metadata.json`] as any })
+            assertSpyCallAsync(r2PutSpy, 0, { args: [
+                hash,
+                body,
+                {
+                httpMetadata: {
+                    cacheControl: "public, max-age=31536000, immutable",
+                    contentType: "text/plain",
+                },
+                sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            }] as any })
+            assertSpyCallAsync(r2PutSpy, 1, { args: [
+                `${hash}.metadata.json`,
+                JSON.stringify(metadata)
+            ] as any })
         })
     })
 })
@@ -162,10 +176,15 @@ class MockWorkerEnv implements WorkerEnv {
 }
 
 class MockModuleWorkerContext implements ModuleWorkerContext {
+    private tasks: Promise<unknown>[] = [] 
+    
     passThroughOnException(): void {
         throw new Error("Method not implemented.")
     }
-    waitUntil(_promise: Promise<unknown>): void {
-        throw new Error("Method not implemented.")
+    waitUntil(promise: Promise<unknown>): void {
+        this.tasks.push(promise)
+    }
+    async waitForAll(): Promise<void> {
+        await Promise.all(this.tasks)
     }
 }
