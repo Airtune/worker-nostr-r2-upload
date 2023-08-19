@@ -1,6 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.198.0/assert/mod.ts";
 import { describe, it } from "https://deno.land/std@0.198.0/testing/bdd.ts";
-import { stub, spy, assertSpyCallAsync } from "https://deno.land/std@0.198.0/testing/mock.ts";
+import { stub, spy, assertSpyCallAsync, assertSpyCalls } from "https://deno.land/std@0.198.0/testing/mock.ts";
 
 import index from './index.ts'
 import { WorkerEnv } from "./worker_env.d.ts";
@@ -175,6 +175,7 @@ describe("index.ts", () => {
 
             //Assert
             assertEquals(response.status, 401)
+            assertSpyCalls(r2PutSpy, 0);
         })
     })
 
