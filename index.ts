@@ -1,13 +1,8 @@
 import {
   type Event,
-  type EventTemplate,
   type HandlerContext,
   type MatchHandler,
   type ModuleWorkerContext,
-  type R2Object,
-  bytesToHex,
-  finishEvent,
-  getBlankEvent,
   nip26,
   nip98,
   router,

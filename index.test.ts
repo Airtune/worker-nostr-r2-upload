@@ -4,9 +4,8 @@ import { stub, spy, assertSpyCallAsync, assertSpyCalls } from "https://deno.land
 
 import index from './index.ts'
 import { WorkerEnv } from "./worker_env.d.ts";
-import { ModuleWorkerContext, R2Bucket, KVNamespace, R2Object, R2ObjectBody, R2GetOptions, R2PutOptions, nip98, 
-    getBlankEvent, finishEvent, generatePrivateKey, getPublicKey, Event } from './deps.ts';
-
+import { ModuleWorkerContext, R2Bucket, KVNamespace, R2Object, R2ObjectBody, R2GetOptions, R2PutOptions, 
+    getBlankEvent, finishEvent, generatePrivateKey, Event } from './test-deps.ts';
 
 describe("index.ts", () => {
     describe('HEAD /file/:hash', () => {
