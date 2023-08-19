@@ -97,33 +97,6 @@ function auth(next: MatchHandler<AuthContext>): MatchHandler<Context> {
 }
 
 /**
- * Handle extracting metadata from object and sending the `kind 1063` event.
- * 
- * @param request The request used to create the object.
- * @param object The object itself.
- * @param env The worker environment.
- */
-async function handleMetadada(baseUrl: string, object: R2Object, env: WorkerEnv): Promise<void> {
-  if(!object.checksums.sha256) {
-    throw new Error("Failed to build file metadata: missing sha256 checksum.")
-  }
-  const fileMetadataEvent: EventTemplate<1063> = getBlankEvent(1063) // 1063 is NIP-94 event kind for file metadata
-  fileMetadataEvent.tags.push(['url', `${baseUrl}/${object.key}`])
-  fileMetadataEvent.tags.push(['m', object.httpMetadata.contentType || 'application/octet-stream'])
-  fileMetadataEvent.tags.push(['x',  bytesToHex(new Uint8Array(object.checksums.sha256))])
-  fileMetadataEvent.tags.push(['size', object.size.toString()])
-  // TODO dim (image dimensions) requires reading image header bytes
-  // TODO i (torrent infohash) and magnet (Magnet URI)- requires generating a .torrent file (which could be stored in the bucket too)
-  // TODO blurhash - requires rendering the image
-  const signedEvent = finishEvent(fileMetadataEvent, env.PRIVATE_KEY)
-  await env.BANBOORU_BUCKET.put(`${object.key}.metadata.json`, JSON.stringify(signedEvent))
-
-  // TODO Send `kind 1063` event to nostr relay(s)
-
-  return
-}
-
-/**
  * Restricted access middleware. Requires a known public key with one of the specific `roles` from a base64 encoded File Metadata Event in the Authorization header.
  */
 function restricted(roles: Role[], next: MatchHandler<AuthContext>): MatchHandler<Context> {
@@ -208,12 +181,7 @@ const handler = router<Context>({
         }
       }
 
-      // Handle metadata without blocking the response.
-      workerContext.waitUntil(handleMetadada(
-        `https://${request.headers.get('host')}`,
-          object,
-          env
-        ))
+      await env.BANBOORU_BUCKET.put(`${params.hash}.metadata.json`, JSON.stringify(fileMetadataEvent));
 
       return new Response(null, { status: 204 }) // Success response with no content.
     } catch (error) {
