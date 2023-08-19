@@ -13,21 +13,17 @@ type AuthEvent = Event & { kind: EventKind.HttpAuth }
 type MetadataEvent = Event & { kind: 1063 }
 
 /**
- * Verify a request NIP-98 authorization.
+ * Return a verified nostr event from a request `Authorization` header.
+ * Use the same authorization scheme as NIP-98 but the value of the token is a base64 encoded `event 1063`
+ * event whose `url` tag of the event MUST match the `request.url`.
  * 
- * @returns Either a validated `kind 27235` event, or a object containing an error message.
+ * @returns Either a validated `kind 1063` event, or a object containing an error message.
  */
 async function get_auth_event(request: Request): Promise<AuthEvent | { error: string }> {
   try {
     const token = request.headers.get('Authorization')
     if (!token) return { error: 'missing Authorization header' }
-    const event: AuthEvent = (await nip98.unpackEventFromToken(token)) as AuthEvent
-    if (await nip98.validateEvent(event, request.url, request.method)) {
-      return event
-    } else {
-      return { error: 'Invalid nostr event.'}
-    }
-    
+    return { error: "TODO" }    
   } catch (error) {
     console.debug('Failed NIP-98 authentication.', error)
     if (error instanceof Error) {
