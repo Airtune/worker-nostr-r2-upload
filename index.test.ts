@@ -1,13 +1,22 @@
-import { assertEquals } from "https://deno.land/std@0.198.0/assert/mod.ts";
-import { describe, it } from "https://deno.land/std@0.198.0/testing/bdd.ts";
-import { stub, spy, assertSpyCallAsync, assertSpyCalls } from "https://deno.land/std@0.198.0/testing/mock.ts";
+
 
 import index from './index.ts'
 import { WorkerEnv } from "./worker_env.d.ts";
 import { ModuleWorkerContext, R2Bucket, KVNamespace, R2ObjectBody, R2GetOptions, R2PutOptions, 
     generatePrivateKey, Event } from './deps.ts';
 
-import { R2Object, getBlankEvent, finishEvent } from './test-deps.ts';
+import {
+    R2Object,
+    getBlankEvent,
+    finishEvent,
+    assertEquals,
+    describe,
+    it,
+    stub,
+    spy,
+    assertSpyCallAsync,
+    assertSpyCalls
+} from './test-deps.ts';
 
 describe("index.ts", () => {
     describe('HEAD /file/:hash', () => {
