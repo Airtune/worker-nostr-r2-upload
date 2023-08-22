@@ -66,7 +66,7 @@ type AuthContext = Context & {
   user: {
     /** The user pubkey, same as `fileMetadataEvent.pubkey` */
     pubkey: string
-    /** The user's role (as retrieved with `BANBOORU_PUBKEY_ROLE_KV.get(userId)` */
+    /** The user's role (as retrieved with `BANBOORU_PUBKEY_ROLE_KV.get(pubkey)` */
     role: Role | undefined
   }
 }
